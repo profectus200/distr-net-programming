@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// Database service definition
+service Database {
+  rpc PutUser(User) returns (StatusResponse);
+
+  rpc DeleteUser(UserID) returns (StatusResponse);
+
+  rpc GetUsers(EmptyMessage) returns (UsersResponse);
+}
+
+message UserID {
+  int32 user_id = 1;
+}
+
+message User {
+  int32 user_id = 1;
+  string user_name = 2;
+}
+
+message UsersResponse {
+  repeated User users = 1;
+}
+
+message EmptyMessage {}
+
+message StatusResponse {
+  bool status = 1;
+}
