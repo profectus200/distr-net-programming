@@ -8,10 +8,16 @@ from threading import Thread
 from xmlrpc.client import ServerProxy, Transport
 from xmlrpc.server import SimpleXMLRPCServer
 
+'''
+I've changed the election timeout in my implementation because of waiting
+for dead server issues, so please make client to wait 15 seconds before the start.
+'''
+
+
 PORT = 1234
 CLUSTER = [1, 2, 3]
-ELECTION_TIMEOUT = (25, 40)
-HEARTBEAT_INTERVAL = 4
+ELECTION_TIMEOUT = (12, 15)
+HEARTBEAT_INTERVAL = 5
 
 
 class NodeState(Enum):
@@ -30,6 +36,7 @@ class Node:
         self.votes = {}
         self.log = []
         self.pending_entry = ''
+        self.append_try = False
         self.voted_for = {}
         self.sched = sched.scheduler(time.time, time.sleep)
         self.reset_election_timer()
@@ -38,8 +45,7 @@ class Node:
         def run_scheduler():
             self.sched.run()
 
-        self.t = Thread(target=run_scheduler)
-        self.t.start()
+        Thread(target=run_scheduler).start()
 
     def is_leader(self):
         """Returns True if this node is the elected cluster leader and False otherwise"""
@@ -72,24 +78,30 @@ class Node:
         self.state = NodeState.CANDIDATE
 
         print(f"New election term {self.term}. State: {self.state}")
+        time.sleep(0.1)
 
+        def send_request(follower_id):
+            try:
+                with ServerProxy(f'http://node_{follower_id}:{PORT}', transport=TimeoutTransport()) as remote_node:
+                    answer = remote_node.request_vote(self.term, self.node_id)
+                    self.votes[follower_id] = answer
+            except:
+                print(f"Follower node {follower_id} is offline")
+                self.votes[follower_id] = False
+
+        threads = []
         for node_id in CLUSTER:
             if node_id != self.node_id:
-                print(f"Requesting vote from node {node_id}")
-                try:
-                    with ServerProxy(f'http://node_{node_id}:{PORT}', transport=TimeoutTransport()) as remote_node:
-                        granted = remote_node.request_vote(self.term, self.node_id)
-                        if granted:
-                            self.votes[node_id] = True
-                except:
-                    print(f"Follower node {node_id} is offline")
-                    self.votes[node_id] = False
+                threads.append(Thread(target=send_request, args=(node_id,)))
+
+        [t.start() for t in threads]
+        [t.join() for t in threads]
 
         num_votes = sum(self.votes.values())
         if num_votes > len(CLUSTER) // 2:
             self.state = NodeState.LEADER
             print(f"Received {num_votes}. State: Leader")
-            self.append_entries()
+            self.reset_heartbeat_timer()
         else:
             print(f"Received {num_votes}. State: Follower")
             self.reset_election_timer()
@@ -123,20 +135,25 @@ class Node:
             If the majority of followers ACKed the entry, the entry is committed to the log and is no longer pending
         """
         print("Sending a heartbeat to followers")
+        time.sleep(0.1)
+
+        def send_heartbeat(follower_id):
+            try:
+                with ServerProxy(f'http://node_{follower_id}:{PORT}', transport=TimeoutTransport()) as remote_node:
+                    answer = remote_node.heartbeat(self.pending_entry)
+                    self.votes[follower_id] = answer
+            except:
+                print(f"Follower node {follower_id} is offline")
+                self.votes[follower_id] = False
 
         self.votes = {self.node_id: True}
+        threads = []
         for node_id in CLUSTER:
             if node_id != self.node_id:
-                try:
-                    with ServerProxy(f"http://node_{node_id}:{PORT}", transport=TimeoutTransport()) as remote_node:
-                        ack = remote_node.heartbeat(self.pending_entry)
-                        if ack:
-                            self.votes[node_id] = True
-                        else:
-                            self.votes[node_id] = False
-                except:
-                    print(f"Follower node {node_id} is offline")
-                    self.votes[node_id] = False
+                threads.append(Thread(target=send_heartbeat, args=(node_id,)))
+
+        [t.start() for t in threads]
+        [t.join() for t in threads]
 
         self.reset_heartbeat_timer()
         num_votes = sum(self.votes.values())
@@ -145,8 +162,10 @@ class Node:
                 self.log.append(self.pending_entry)
                 print(f"Leader committed '{self.pending_entry}'")
                 self.pending_entry = ''
+            self.append_try = True
             return True
         else:
+            self.append_try = True
             return False
 
     def heartbeat(self, leader_entry):
@@ -173,14 +192,16 @@ class Node:
 
         if self.state == NodeState.LEADER:
             self.pending_entry = log
-            time.sleep(HEARTBEAT_INTERVAL + 1)
+            self.append_try = False
+            while not self.append_try:
+                time.sleep(0.5)
             return self.pending_entry == ''
         else:
             return False
 
 
 class TimeoutTransport(Transport):
-    def _create_connection(self, host, timeout=0.1):
+    def _create_connection(self, host, timeout=1):
         # Set timeout on socket before creating connection
         if timeout is not None:
             self.timeout = timeout

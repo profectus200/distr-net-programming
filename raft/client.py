@@ -7,7 +7,7 @@ CLUSTER = [1, 2, 3]
 LOGS = ['SET 5', 'ADD 1']
 
 if __name__ == '__main__':
-    time.sleep(40)  # Wait for leader election processs
+    time.sleep(15)  # Wait for leader election processs
     print('Client started')
     for node_id in CLUSTER:
         try:
